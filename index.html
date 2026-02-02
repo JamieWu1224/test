@@ -30,7 +30,7 @@
       padding: 16px;
     }
 
-    /* FULL-SCREEN CONFETTI CANVAS */
+    /* Full-screen confetti canvas */
     #confettiCanvas {
       position: fixed;
       inset: 0;
@@ -67,7 +67,11 @@
       width: min(520px, 92%);
       height: 150px;
       margin: 0 auto;
+
+      /* Important on iOS: allow us to receive touches without page scrolling interference */
       touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
     }
 
     button {
@@ -81,7 +85,6 @@
       border: none;
       cursor: pointer;
       box-shadow: 0 10px 24px rgba(0,0,0,.14);
-      user-select: none;
       -webkit-tap-highlight-color: transparent;
       transition: transform .12s ease, background .12s ease;
     }
@@ -133,7 +136,6 @@
   <canvas id="confettiCanvas"></canvas>
 
   <main class="card">
-    <!-- ANIMAL WITH HEART -->
     <svg class="art" viewBox="0 0 320 240" xmlns="http://www.w3.org/2000/svg">
       <defs>
         <linearGradient id="fur" x1="0" x2="1">
@@ -178,7 +180,6 @@
       <button id="noBtn">No</button>
     </section>
 
-    <!-- HINT -->
     <div class="hint" id="hint">Bet you can't catch “No” 😈</div>
 
     <section class="result" id="result">
@@ -198,7 +199,7 @@
     const result = document.getElementById("result");
     const hint = document.getElementById("hint");
 
-    /* ---------- CONFETTI ---------- */
+    /* ------------------ Confetti setup ------------------ */
     const confettiCanvas = document.getElementById("confettiCanvas");
 
     function resizeConfettiCanvas() {
@@ -213,10 +214,13 @@
     window.addEventListener("resize", resizeConfettiCanvas);
     window.addEventListener("orientationchange", () => setTimeout(resizeConfettiCanvas, 150));
 
-    const confettiInstance = confetti.create(confettiCanvas, {
-      resize: false,
-      useWorker: true
-    });
+    // iOS Safari can be picky with workers in some environments; keep a safe fallback.
+    let confettiInstance;
+    try {
+      confettiInstance = confetti.create(confettiCanvas, { resize: false, useWorker: true });
+    } catch (e) {
+      confettiInstance = confetti.create(confettiCanvas, { resize: false, useWorker: false });
+    }
 
     function fullScreenConfetti() {
       const end = Date.now() + 1600;
@@ -243,62 +247,192 @@
       }, 300);
     }
 
-    /* ---------- YES BUTTON GROWS ---------- */
+    /* ------------------ Yes button grows ------------------ */
     let yesScale = 1;
     function growYes() {
       yesScale = Math.min(2.2, yesScale + 0.1);
       yesBtn.style.transform = `translateY(-50%) scale(${yesScale})`;
     }
 
-    /* ---------- NO BUTTON RUNS AWAY ---------- */
+    /* ------------------ No button runs away ------------------ */
+
+    // Tweak these to make it more evil / harder to catch:
+    const TRIGGER_RADIUS = 180; // larger = more sensitive (better for mobile)
+    const JUMP_DISTANCE  = 190; // larger = jumps farther
+    const BIAS_STRENGTH  = 0.9; // 0..1, higher = more "run to the opposite side"
+    const EDGE_PADDING   = 8;   // keep some padding from the zone edges
+
     function clamp(n, min, max) {
       return Math.max(min, Math.min(max, n));
     }
 
-    function moveNo(px, py) {
+    // Get client pointer from mouse / pointer / touch
+    function getPointFromEvent(e) {
+      if (e.touches && e.touches.length) {
+        return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      }
+      return { x: e.clientX, y: e.clientY };
+    }
+
+    /**
+     * Compute a "biased" target location:
+     * 1) Move away from the pointer (classic behavior).
+     * 2) Prefer the far side of the zone (opposite quadrant), so it won't get stuck in easy corners.
+     */
+    function computeBiasedPosition(pointerX, pointerY) {
       const z = zone.getBoundingClientRect();
       const b = noBtn.getBoundingClientRect();
 
-      let dx = (b.left + b.width / 2) - px;
-      let dy = (b.top + b.height / 2) - py;
-      let mag = Math.hypot(dx, dy) || 1;
-      dx /= mag;
-      dy /= mag;
+      const zoneCenterX = z.left + z.width / 2;
+      const zoneCenterY = z.top + z.height / 2;
 
-      let newLeft = (b.left - z.left) + dx * 150;
-      let newTop  = (b.top - z.top) + dy * 150;
+      // Button center
+      const bx = b.left + b.width / 2;
+      const by = b.top + b.height / 2;
 
-      newLeft = clamp(newLeft, 0, z.width - b.width);
-      newTop  = clamp(newTop, 0, z.height - b.height);
+      // Vector away from pointer
+      let ax = bx - pointerX;
+      let ay = by - pointerY;
+      let amag = Math.hypot(ax, ay) || 1;
+      ax /= amag;
+      ay /= amag;
 
-      noBtn.style.left = newLeft + "px";
-      noBtn.style.top = newTop + "px";
+      // "Opposite side" bias:
+      // If pointer is on left side, bias target to the right side, and vice versa.
+      // Same for top/bottom.
+      const pointerIsLeft = pointerX < zoneCenterX;
+      const pointerIsTop  = pointerY < zoneCenterY;
+
+      // Target anchor point in the opposite quadrant inside the zone
+      const targetX = z.left + (pointerIsLeft ? z.width * 0.78 : z.width * 0.22);
+      const targetY = z.top  + (pointerIsTop  ? z.height * 0.78 : z.height * 0.22);
+
+      // Vector toward that opposite anchor
+      let bxv = targetX - bx;
+      let byv = targetY - by;
+      let bmag = Math.hypot(bxv, byv) || 1;
+      bxv /= bmag;
+      byv /= bmag;
+
+      // Combine vectors: away-from-pointer + bias-to-opposite-side
+      // Normalize again
+      let vx = ax + bxv * BIAS_STRENGTH;
+      let vy = ay + byv * BIAS_STRENGTH;
+      let vmag = Math.hypot(vx, vy) || 1;
+      vx /= vmag;
+      vy /= vmag;
+
+      // Convert to zone-local coordinates
+      let newLeft = (b.left - z.left) + vx * JUMP_DISTANCE;
+      let newTop  = (b.top  - z.top)  + vy * JUMP_DISTANCE;
+
+      // Clamp inside zone with padding
+      const minLeft = EDGE_PADDING;
+      const minTop  = EDGE_PADDING;
+      const maxLeft = z.width - b.width - EDGE_PADDING;
+      const maxTop  = z.height - b.height - EDGE_PADDING;
+
+      newLeft = clamp(newLeft, minLeft, maxLeft);
+      newTop  = clamp(newTop,  minTop,  maxTop);
+
+      return { newLeft, newTop, z, b, minLeft, minTop, maxLeft, maxTop };
+    }
+
+    /**
+     * If the computed position is too close to an edge/corner, nudge it inward.
+     * This reduces the chance of the button getting pinned into an easy-to-tap corner.
+     */
+    function antiCornerNudge(pos) {
+      let { newLeft, newTop, minLeft, minTop, maxLeft, maxTop } = pos;
+
+      const nearLeft = (newLeft - minLeft) < 10;
+      const nearRight = (maxLeft - newLeft) < 10;
+      const nearTop = (newTop - minTop) < 10;
+      const nearBottom = (maxTop - newTop) < 10;
+
+      // If near a corner or edge, nudge toward center
+      if (nearLeft) newLeft += 20;
+      if (nearRight) newLeft -= 20;
+      if (nearTop) newTop += 14;
+      if (nearBottom) newTop -= 14;
+
+      newLeft = clamp(newLeft, minLeft, maxLeft);
+      newTop  = clamp(newTop,  minTop,  maxTop);
+
+      return { newLeft, newTop };
+    }
+
+    function moveNo(pointerX, pointerY) {
+      const pos = computeBiasedPosition(pointerX, pointerY);
+      const nudged = antiCornerNudge(pos);
+
+      noBtn.style.left = nudged.newLeft + "px";
+      noBtn.style.top = nudged.newTop + "px";
+      // Once it starts moving, we fully control its absolute position
       noBtn.style.transform = "none";
 
       growYes();
     }
 
-    zone.addEventListener("pointermove", e => {
+    function maybeRunAway(pointerX, pointerY) {
       const b = noBtn.getBoundingClientRect();
       const d = Math.hypot(
-        (b.left + b.width / 2) - e.clientX,
-        (b.top + b.height / 2) - e.clientY
+        (b.left + b.width / 2) - pointerX,
+        (b.top + b.height / 2) - pointerY
       );
-      if (d < 140) moveNo(e.clientX, e.clientY);
+      if (d < TRIGGER_RADIUS) moveNo(pointerX, pointerY);
+    }
+
+    /* -------- Desktop: "hover" feel (mouse moves near button) -------- */
+    zone.addEventListener("pointermove", (e) => {
+      // Only use hover logic for real mouse pointers
+      if (e.pointerType === "mouse") {
+        maybeRunAway(e.clientX, e.clientY);
+      }
     });
 
-    noBtn.addEventListener("click", e => e.preventDefault());
+    /* -------- Mobile: "hover-like" feel (finger moves in the zone) -------- */
+    zone.addEventListener("touchstart", (e) => {
+      // Prevent scrolling / rubber-band from interfering
+      e.preventDefault();
+      const p = getPointFromEvent(e);
+      maybeRunAway(p.x, p.y);
+    }, { passive: false });
 
-    /* ---------- YES CLICK ---------- */
+    zone.addEventListener("touchmove", (e) => {
+      e.preventDefault();
+      const p = getPointFromEvent(e);
+      maybeRunAway(p.x, p.y);
+    }, { passive: false });
+
+    /* -------- Always: if user actually hits "No", it immediately escapes -------- */
+    noBtn.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      const p = getPointFromEvent(e);
+      moveNo(p.x, p.y);
+    });
+
+    noBtn.addEventListener("touchstart", (e) => {
+      e.preventDefault();
+      const p = getPointFromEvent(e);
+      moveNo(p.x, p.y);
+    }, { passive: false });
+
+    // Click fallback for any odd browser behavior
+    noBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      const b = noBtn.getBoundingClientRect();
+      moveNo(b.left + b.width / 2, b.top + b.height / 2);
+    });
+
+    /* ------------------ Yes click ------------------ */
     yesBtn.addEventListener("click", () => {
       zone.style.display = "none";
-      hint.style.display = "none";     // HIDE THE HINT
+      hint.style.display = "none";
       result.style.display = "block";
       resizeConfettiCanvas();
       fullScreenConfetti();
     });
   </script>
 </body>
-
 </html>
-
