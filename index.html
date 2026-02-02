@@ -68,7 +68,7 @@
       height: 150px;
       margin: 0 auto;
 
-      /* Important on iOS: allow us to receive touches without page scrolling interference */
+      /* Keep this for iOS so the zone doesn’t scroll while interacting */
       touch-action: none;
       -webkit-user-select: none;
       user-select: none;
@@ -182,7 +182,7 @@
         <!-- HEAD -->
         <ellipse cx="160" cy="132" rx="88" ry="66" fill="url(#catFur)"/>
 
-        <!-- LEFT EAR: outer group = fixed position, inner group = rotation animation -->
+        <!-- LEFT EAR -->
         <g transform="translate(95 92)">
           <g>
             <polygon points="0,20 -18,-25 26,0" fill="#f2a97b"/>
@@ -197,7 +197,7 @@
           </g>
         </g>
 
-        <!-- RIGHT EAR: outer group = fixed position, inner group = rotation animation -->
+        <!-- RIGHT EAR -->
         <g transform="translate(225 92)">
           <g>
             <polygon points="0,20 18,-25 -26,0" fill="#f2a97b"/>
@@ -238,7 +238,7 @@
           <line x1="198" y1="156" x2="232" y2="160"/>
         </g>
 
-        <!-- CHEEKS (tiny blush pulse) -->
+        <!-- CHEEKS -->
         <g opacity="0.22">
           <circle cx="120" cy="156" r="12" fill="#ff5b93">
             <animate attributeName="opacity" values="0.18;0.28;0.18" dur="1.8s" repeatCount="indefinite"/>
@@ -254,8 +254,8 @@
       <h1>Hey Sherrrrry1202, would you like to grab dinner sometime?</h1>
 
       <section class="button-zone" id="zone">
-        <button id="yesBtn">Yes</button>
-        <button id="noBtn">No</button>
+        <button id="yesBtn" type="button">Yes</button>
+        <button id="noBtn" type="button">No</button>
       </section>
 
       <div class="hint" id="hint">Bet you can't catch “No” 😈</div>
@@ -437,22 +437,59 @@
       if (d < TRIGGER_RADIUS) moveNo(pointerX, pointerY);
     }
 
+    /* ------------------ YES action (single source of truth) ------------------ */
+    function handleYes() {
+      question.style.display = "none";
+      result.style.display = "block";
+      resizeConfettiCanvas();
+      fullScreenConfetti();
+    }
+
+    /* Prefer pointer events (works on Windows/Mac + many mobiles) */
+    yesBtn.addEventListener("pointerup", (e) => {
+      e.preventDefault();
+      handleYes();
+    });
+
+    /* iOS Safari fallback: touchstart guarantees it fires even if click is suppressed */
+    yesBtn.addEventListener("touchstart", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      handleYes();
+    }, { passive: false });
+
+    /* Click fallback (desktop) */
+    yesBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      handleYes();
+    });
+
+    /* Desktop: hover feel */
     zone.addEventListener("pointermove", (e) => {
       if (e.pointerType === "mouse") maybeRunAway(e.clientX, e.clientY);
     });
 
+    /* Mobile: hover-like feel
+       IMPORTANT: do NOT preventDefault when touching the buttons,
+       otherwise iOS may not fire their click/touch properly.
+    */
     zone.addEventListener("touchstart", (e) => {
+      const t = e.target;
+      if (t === yesBtn || t === noBtn) return; // allow button to work
       e.preventDefault();
       const p = getPointFromEvent(e);
       maybeRunAway(p.x, p.y);
     }, { passive: false });
 
     zone.addEventListener("touchmove", (e) => {
+      const t = e.target;
+      if (t === yesBtn || t === noBtn) return; // allow button to work
       e.preventDefault();
       const p = getPointFromEvent(e);
       maybeRunAway(p.x, p.y);
     }, { passive: false });
 
+    /* If user actually hits "No", it escapes */
     noBtn.addEventListener("pointerdown", (e) => {
       e.preventDefault();
       const p = getPointFromEvent(e);
@@ -470,15 +507,6 @@
       const b = noBtn.getBoundingClientRect();
       moveNo(b.left + b.width / 2, b.top + b.height / 2);
     });
-
-    /* ------------------ Yes click (Fix A) ------------------ */
-    yesBtn.addEventListener("click", () => {
-      question.style.display = "none";
-      result.style.display = "block";
-      resizeConfettiCanvas();
-      fullScreenConfetti();
-    });
   </script>
 </body>
 </html>
-
